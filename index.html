@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>AV Image Cockpit High-Perf</title>
+<title>AV Image Cockpit Final</title>
 <style>
     /* === デザイン設定 === */
     :root {
@@ -111,6 +111,14 @@
         position: absolute; top: -15px; right: 0; font-size: 9px; color: var(--neon-blue);
     }
 
+    /* ロード中オーバーレイ */
+    #loading-overlay {
+        position: fixed; top:0; left:0; width:100%; height:100%; z-index: 1000;
+        background: rgba(0,0,0,0.9); display: none; flex-direction: column; justify-content: center; align-items: center;
+    }
+    #loading-bar-wrap { width: 300px; height: 10px; background: #333; border: 1px solid #555; margin-top: 20px; }
+    #loading-bar { width: 0%; height: 100%; background: var(--neon-green); transition: width 0.1s; }
+
     /* 初期画面 */
     #init-screen {
         position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 999;
@@ -122,14 +130,6 @@
         box-shadow: 0 0 30px var(--neon-pink); animation: pulse 1.5s infinite; text-align: center;
     }
     @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
-    
-    /* ロード中オーバーレイ */
-    #loading-overlay {
-        position: fixed; top:0; left:0; width:100%; height:100%; z-index: 1000;
-        background: rgba(0,0,0,0.9); display: none; flex-direction: column; justify-content: center; align-items: center;
-    }
-    #loading-bar-wrap { width: 300px; height: 10px; background: #333; border: 1px solid #555; margin-top: 20px; }
-    #loading-bar { width: 0%; height: 100%; background: var(--neon-green); transition: width 0.1s; }
     
     #hidden-canvas { display: none; }
 </style>
@@ -170,7 +170,7 @@
                 <input type="range" id="duration-slider" min="2" max="15" step="0.5" value="5">
             </div>
             <div style="font-size:9px; color:#666; margin-top:5px; text-align:center;">
-                Loaded: <span id="total-count">0</span> images
+                Total: <span id="total-count">0</span> images
             </div>
         </div>
 
@@ -213,17 +213,16 @@
 
 <div id="init-screen">
     <h1 style="color:var(--neon-pink); text-shadow:0 0 20px var(--neon-pink); font-size:40px; margin:0;">AV IMAGE</h1>
-    <div style="color:var(--neon-blue); letter-spacing:4px; margin-bottom:20px;">PERFORMANCE COCKPIT</div>
+    <div style="color:var(--neon-blue); letter-spacing:4px; margin-bottom:20px;">SYNC TRIGGER COCKPIT</div>
     <label class="start-btn">
         📂 SELECT FOLDER
         <input type="file" id="mainFileInput" webkitdirectory directory multiple>
     </label>
-    <div style="margin-top:20px; color:#666; font-size:12px;">Supports 1000+ Images</div>
 </div>
 
 <script>
     // === 設定 ===
-    const HIT_X = 60;
+    const HIT_X = 60; // 判定ライン座標
     
     // === DOM ===
     const img1 = document.getElementById('img1');
@@ -254,6 +253,7 @@
     let playlist = [];
     let notes = [];
     let currentImgIndex = 1; 
+    let currentUrl = null; // メモリ解放用
     
     let slideStartTime = 0;
     let minDuration = 5000;
@@ -265,7 +265,6 @@
     let currentSpeed = 5;
 
     // === イベント ===
-    // フォルダ選択対応
     document.getElementById('mainFileInput').addEventListener('change', handleFileSelectAsync);
     document.getElementById('subFileInput').addEventListener('change', handleFileSelectAsync);
     
@@ -280,80 +279,78 @@
         else if (document.exitFullscreen) document.exitFullscreen();
     });
 
-    // === 非同期読み込み処理（3000枚対策） ===
+    // === 大量ファイル読み込み処理 ===
     async function handleFileSelectAsync(e) {
         const rawFiles = e.target.files;
         if (rawFiles.length === 0) return;
 
-        // ロード画面表示
         initScreen.style.display = 'none';
         loadingOverlay.style.display = 'flex';
         
         const total = rawFiles.length;
         let loaded = 0;
         let newFiles = [];
-
-        // チャンク処理：500ファイルごとに休憩を入れてUIフリーズを防ぐ
         const CHUNK_SIZE = 500;
         
         for (let i = 0; i < total; i++) {
-            // 画像ファイルのみ抽出
             if (rawFiles[i].type.startsWith('image/')) {
                 newFiles.push(rawFiles[i]);
             }
             loaded++;
 
-            // 一定数ごとに描画更新待ちを入れる
             if (i % CHUNK_SIZE === 0) {
                 loadingText.innerText = `${loaded} / ${total}`;
                 loadingBar.style.width = (loaded / total * 100) + "%";
-                await new Promise(r => setTimeout(r, 0)); // UIスレッドに制御を戻す
+                await new Promise(r => setTimeout(r, 0)); // UI更新用ウェイト
             }
         }
 
-        // 完了処理
         playlist = playlist.concat(newFiles);
-        shuffleArray(playlist); // シャッフルもここで
+        shuffleArray(playlist);
         
         totalCount.innerText = playlist.length;
         loadingOverlay.style.display = 'none';
 
-        // 再生開始
-        if (!slideStartTime) { // まだ始まってなければ
+        if (!slideStartTime) {
             playNext();
             requestAnimationFrame(renderLoop);
         }
     }
 
     function shuffleArray(array) {
-        // 大量配列のシャッフルは重いので、Fisher-Yatesアルゴリズムで効率的に行う
         for (let i = array.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [array[i], array[j]] = [array[j], array[i]];
         }
     }
 
-    // === 以降は同じロジック ===
-
+    // === メインロジック ===
     function playNext() {
         if(playlist.length === 0) return;
         
         const file = playlist.shift();
-        playlist.push(file); // 末尾へ
+        playlist.push(file); // ループ
+
+        // メモリ管理（簡易）: 直前のURLがあれば解放
+        if (currentUrl) URL.revokeObjectURL(currentUrl);
+        currentUrl = URL.createObjectURL(file);
 
         const imgObj = new Image();
-        const url = URL.createObjectURL(file);
-        imgObj.src = url;
+        imgObj.src = currentUrl;
         
         imgObj.onload = () => {
-            // メモリリーク対策: 前のURLを解放したいが、img1/2で使い回すので
-            // ここでは簡易的に実装。厳密には前の画像のURLをrevokeすべき
-            
+            // 解析実行
             const analysis = analyzeImage(imgObj);
             
+            // パラメータ決定（中辛調整 & 0.5秒リミット）
             currentScore = analysis.totalScore;
-            currentInterval = 5000 - (currentScore / 100 * (5000 - 500));
-            currentSpeed = 3 + (currentScore / 100 * 12);
+            
+            // 間隔: 5000ms <-> 500ms (0.5秒)
+            const ratio = currentScore / 100;
+            currentInterval = 5000 - (ratio * (5000 - 500));
+            
+            // 速度: 3 <-> 12
+            currentSpeed = 3 + (ratio * 9);
 
             updateUI(analysis);
             
@@ -364,12 +361,14 @@
             prevImg.classList.remove('active');
             currentImgIndex = currentImgIndex === 1 ? 2 : 1;
 
+            // トリガーリセット
             slideStartTime = Date.now();
             isLocked = true;
             timerBar.style.width = '0%';
             timerStatus.innerText = "LOCKED";
             timerStatus.style.color = "var(--neon-blue)";
             
+            // 少し待ってからノーツ開始
             nextNoteTime = Date.now() + 500;
         };
     }
@@ -385,7 +384,7 @@
         let skinPixels = 0;
         let edgeScore = 0;
         
-        // 解析も少し間引いて高速化
+        // 飛び石解析
         const stride = 16; 
         for(let i = 0; i < data.length - 4; i += stride) {
             const r = data[i], g = data[i+1], b = data[i+2];
@@ -397,15 +396,28 @@
         }
 
         const pixels = (data.length / 4) / (stride/4);
-        let skin = (skinPixels / pixels) * 100; // 間引いた分補正
-        if(skin > 80) skin = 80;
-        let cplx = (edgeScore / pixels) / 30 * 100;
+        
+        // --- 中辛チューニング ---
+        // 肌色: 6割で満点 (1.6倍)
+        let skin = (skinPixels / pixels) * 160; 
+        if(skin > 100) skin = 100;
+
+        // 複雑度: 基準25
+        let cplx = (edgeScore / pixels) / 25 * 100;
         if(cplx > 100) cplx = 100;
+
+        // 総合
+        let total = (skin * 0.6) + (cplx * 0.4);
+
+        // ボーナス: 両方そこそこあれば +15
+        if (skin > 30 && cplx > 30) {
+            total += 15;
+        }
 
         return {
             skin: skin,
             cplx: cplx,
-            totalScore: Math.min((skin * 0.6) + (cplx * 0.4) * 1.5, 100)
+            totalScore: Math.min(total, 100)
         };
     }
 
@@ -423,6 +435,7 @@
     function renderLoop() {
         requestAnimationFrame(renderLoop);
         
+        // Canvasリサイズ
         const p = notesCanvas.parentElement;
         if(notesCanvas.width !== p.clientWidth || notesCanvas.height !== p.clientHeight) {
             notesCanvas.width = p.clientWidth;
@@ -435,6 +448,7 @@
         const now = Date.now();
         const elapsed = now - slideStartTime;
 
+        // タイマー更新
         if (isLocked) {
             let progress = (elapsed / minDuration) * 100;
             if (progress >= 100) {
@@ -447,11 +461,13 @@
             timerBar.style.width = progress + "%";
         }
 
+        // ノーツ生成
         if (now > nextNoteTime) {
             spawnNote();
             nextNoteTime = now + currentInterval;
         }
 
+        // ノーツ更新 & トリガー判定
         const line = document.getElementById('hit-line');
         let triggered = false;
 
@@ -467,6 +483,11 @@
             nCtx.roundRect(n.x, n.y, n.width, n.height, 4);
             nCtx.fill();
 
+            // トリガー条件:
+            // 1. まだこのフレームでトリガーしていない
+            // 2. ロック解除済み
+            // 3. 判定ラインを超えた
+            // 4. まだ通過処理していない
             if (!triggered && !isLocked && n.x < HIT_X && !n.passed) {
                 n.passed = true;
                 triggered = true;
@@ -477,6 +498,7 @@
 
                 playNext(); 
             }
+            // 単なる通過エフェクト (ロック中など)
             else if (n.x < HIT_X && n.x > HIT_X - currentSpeed - 5 && !n.passed) {
                 n.passed = true;
                 line.style.background = n.color;
