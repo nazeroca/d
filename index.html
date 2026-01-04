@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>AV Image Cockpit</title>
+<title>AV Image Cockpit Sync</title>
 <style>
     /* === デザイン設定 === */
     :root {
@@ -26,10 +26,9 @@
         display: flex; justify-content: center; align-items: center;
     }
     
-    /* 画像のフェード切り替え用 */
     .slide-img { 
         position: absolute; top: 0; left: 0; width: 100%; height: 100%; 
-        object-fit: contain; opacity: 0; transition: opacity 0.8s ease-in-out; 
+        object-fit: contain; opacity: 0; transition: opacity 0.3s ease-in-out; 
     }
     .slide-img.active { opacity: 1; z-index: 10; }
     
@@ -97,15 +96,18 @@
         box-shadow: 0 0 15px #fff;
     }
 
-    /* 残り時間タイマー */
+    /* 最低保証時間タイマー */
     #timer-wrap {
-        height: 40px; position: relative; background: #000;
-        border: 1px solid #444; overflow: hidden; margin-top: 5px;
+        height: 6px; position: relative; background: #333;
+        border-radius: 3px; overflow: hidden; margin-top: 5px;
     }
     #timer-bar { 
-        height: 100%; width: 100%; 
-        background: linear-gradient(90deg, var(--neon-blue), var(--neon-pink)); 
-        transform-origin: left; transition: transform 0.1s linear;
+        height: 100%; width: 0%; 
+        background: var(--neon-blue); 
+        transition: width 0.1s linear;
+    }
+    #timer-status {
+        position: absolute; top: -15px; right: 0; font-size: 9px; color: var(--neon-blue);
     }
 
     /* 初期画面 */
@@ -120,7 +122,6 @@
     }
     @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
     
-    /* 解析用（非表示） */
     #hidden-canvas { display: none; }
 </style>
 </head>
@@ -136,7 +137,6 @@
     </div>
 
     <div id="cockpit-panel">
-        
         <div class="panel-section">
             <div class="title">SYSTEM CONTROL</div>
             <div class="btn-group">
@@ -147,12 +147,12 @@
                 <button class="btn btn-skip" onclick="manualSkip()">SKIP ⏭</button>
             </div>
             
-            <div style="margin-top:10px;">
+            <div style="margin-top:15px;">
                 <div class="bar-row" style="justify-content:space-between; margin-bottom:2px;">
-                    <span>BASE DURATION</span>
+                    <span>MIN DURATION (WAIT TIME)</span>
                     <span id="dur-val" style="color:var(--neon-green)">5.0s</span>
                 </div>
-                <input type="range" id="duration-slider" min="2" max="10" step="0.5" value="5">
+                <input type="range" id="duration-slider" min="2" max="15" step="0.5" value="5">
             </div>
         </div>
 
@@ -160,7 +160,6 @@
             <div class="title">EROS ANALYSIS</div>
             <div id="score-display">IDLE</div>
             <div id="score-sub">WAITING...</div>
-            
             <div class="bar-row">
                 <div class="bar-label">SKIN</div>
                 <div class="bar-track"><div id="bar-skin" class="bar-fill" style="background:#ffccaa;"></div></div>
@@ -172,9 +171,15 @@
         </div>
 
         <div class="panel-section">
-            <div class="title">NEXT SCAN TIMELINE</div>
-            <div id="timer-wrap">
-                <div id="timer-bar"></div>
+            <div class="title">TRIGGER STATUS</div>
+            <div style="position:relative; margin-top:15px;">
+                <div id="timer-status">LOCKED</div>
+                <div id="timer-wrap">
+                    <div id="timer-bar"></div>
+                </div>
+            </div>
+            <div style="font-size:9px; color:#666; margin-top:5px;">
+                * Image changes on first NOTE after unlock
             </div>
         </div>
 
@@ -190,8 +195,7 @@
 
 <div id="init-screen">
     <h1 style="color:var(--neon-pink); text-shadow:0 0 20px var(--neon-pink); font-size:40px; margin:0;">AV IMAGE</h1>
-    <div style="color:var(--neon-blue); letter-spacing:4px; margin-bottom:20px;">ANALYSIS COCKPIT</div>
-    
+    <div style="color:var(--neon-blue); letter-spacing:4px; margin-bottom:20px;">SYNC TRIGGER COCKPIT</div>
     <label class="start-btn">
         🚀 LOAD IMAGES
         <input type="file" id="mainFileInput" multiple accept="image/*">
@@ -199,55 +203,64 @@
 </div>
 
 <script>
-    // === 設定パラメータ ===
-    const NOTE_SPEED = 6;       // ノーツの横移動速度
-    const HIT_X = 60;           // 判定ラインのX座標
-
-    // === システム変数 ===
+    // === 設定定数 ===
+    const HIT_X = 60; // 判定ラインX座標
+    
+    // === DOM要素 ===
     const img1 = document.getElementById('img1');
     const img2 = document.getElementById('img2');
     const notesCanvas = document.getElementById('notes-canvas');
     const nCtx = notesCanvas.getContext('2d');
     
-    // UI要素
     const scoreDisplay = document.getElementById('score-display');
     const scoreSub = document.getElementById('score-sub');
     const barSkin = document.getElementById('bar-skin');
     const barCplx = document.getElementById('bar-cplx');
+    
     const timerBar = document.getElementById('timer-bar');
+    const timerStatus = document.getElementById('timer-status');
     const durSlider = document.getElementById('duration-slider');
     const durVal = document.getElementById('dur-val');
+    
     const initScreen = document.getElementById('init-screen');
-
-    // 解析用
     const hiddenCanvas = document.getElementById('hidden-canvas');
     const hCtx = hiddenCanvas.getContext('2d', { willReadFrequently: true });
 
+    // === 変数 ===
     let playlist = [];
     let notes = [];
-    let slideTimer = null;
-    let currentImgIndex = 1; // 1 or 2
+    let currentImgIndex = 1; 
     
-    // タイマー管理用
+    // トリガー制御
     let slideStartTime = 0;
-    let slideDuration = 5000;
+    let minDuration = 5000; // ミリ秒
+    let isLocked = true;    // 最低時間が経過するまではロック
+    let nextNoteTime = 0;   // 次のノーツ生成時間
     
-    // スコア管理
+    // 現在の画像パラメータ
     let currentScore = 0;
+    let currentInterval = 2000; // ノーツ生成間隔
+    let currentSpeed = 5;       // ノーツ移動速度
 
-    // === イベント設定 ===
+    // === イベント ===
     document.getElementById('mainFileInput').addEventListener('change', handleFileSelect);
     document.getElementById('subFileInput').addEventListener('change', handleFileSelect);
     
-    // スライダー変更
     durSlider.addEventListener('input', (e) => {
-        durVal.innerText = parseFloat(e.target.value).toFixed(1) + "s";
+        const val = parseFloat(e.target.value);
+        durVal.innerText = val.toFixed(1) + "s";
+        minDuration = val * 1000;
+    });
+
+    document.getElementById('image-stage').addEventListener('click', () => {
+        // ダブルタップ判定（簡易）
+        if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
+        else if (document.exitFullscreen) document.exitFullscreen();
     });
 
     function handleFileSelect(e) {
         const files = Array.from(e.target.files);
         if (files.length === 0) return;
-        
         playlist = playlist.concat(files);
         shuffleArray(playlist);
         
@@ -258,17 +271,6 @@
         }
     }
 
-    // ダブルタップ全画面
-    let lastTap = 0;
-    document.getElementById('image-stage').addEventListener('click', () => {
-        const now = new Date().getTime();
-        if (now - lastTap < 300) {
-            if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(()=>{});
-            else if (document.exitFullscreen) document.exitFullscreen();
-        }
-        lastTap = now;
-    });
-
     function shuffleArray(array) {
         for (let i = array.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -276,15 +278,13 @@
         }
     }
 
-    // === メイン：次の画像へ ===
+    // === 画像切り替えロジック ===
     function playNext() {
         if(playlist.length === 0) return;
-        if(slideTimer) clearTimeout(slideTimer);
-
+        
         const file = playlist.shift();
         playlist.push(file);
 
-        // 画像のプリロードと解析開始
         const imgObj = new Image();
         imgObj.src = URL.createObjectURL(file);
         
@@ -292,135 +292,82 @@
             // 解析実行
             const analysis = analyzeImage(imgObj);
             
-            // UI更新
-            updateCockpit(analysis);
+            // パラメータ決定（ここが重要）
+            // スコアが高いほどインターバル短く（連打）、速度速く
+            currentScore = analysis.totalScore;
             
-            // 表示切り替え
+            // 間隔: 500ms(激) 〜 5000ms(静)
+            currentInterval = 5000 - (currentScore / 100 * (5000 - 500));
+            // 速度: 15(激) 〜 3(静)
+            currentSpeed = 3 + (currentScore / 100 * 12);
+
+            updateUI(analysis);
+            
+            // 画像表示切り替え
             const nextImg = currentImgIndex === 1 ? img2 : img1;
             const prevImg = currentImgIndex === 1 ? img1 : img2;
-            
             nextImg.src = imgObj.src;
             nextImg.classList.add('active');
             prevImg.classList.remove('active');
-            
             currentImgIndex = currentImgIndex === 1 ? 2 : 1;
 
-            // 次の時間決定ロジック
-            // ベース時間 - (スコアが高いほど短縮)
-            const baseDur = parseFloat(durSlider.value) * 1000;
-            // スコア100ならベースの40%の時間、スコア0なら100%の時間
-            const nextDur = baseDur - (analysis.totalScore / 100 * (baseDur * 0.6));
-            
-            slideDuration = nextDur;
+            // タイマーリセット
             slideStartTime = Date.now();
-
-            // ノーツ生成
-            spawnNote(analysis.totalScore);
-
-            slideTimer = setTimeout(playNext, slideDuration);
+            isLocked = true;
+            timerBar.style.width = '0%';
+            timerStatus.innerText = "LOCKED";
+            timerStatus.style.color = "var(--neon-blue)";
+            
+            // ロック中もノーツは流し始める
+            nextNoteTime = Date.now() + 500; // 少し待ってから開始
         };
     }
 
-    function manualSkip() {
-        playNext();
-    }
+    function manualSkip() { playNext(); }
 
-    // === 核心：画像解析ロジック ===
     function analyzeImage(img) {
-        // 重くならないよう縮小して解析
-        const w = 200; 
-        const h = 200; // アスペクト比無視でOK
-        hiddenCanvas.width = w;
-        hiddenCanvas.height = h;
+        const w = 200; const h = 200;
+        hiddenCanvas.width = w; hiddenCanvas.height = h;
         hCtx.drawImage(img, 0, 0, w, h);
-        
-        const frame = hCtx.getImageData(0, 0, w, h);
-        const data = frame.data;
-        const len = data.length;
+        const data = hCtx.getImageData(0, 0, w, h).data;
 
         let skinPixels = 0;
         let edgeScore = 0;
         
-        // 4ピクセル飛ばしでスキャン（高速化）
-        for(let i = 0; i < len - 4; i += 16) {
-            const r = data[i];
-            const g = data[i+1];
-            const b = data[i+2];
+        for(let i = 0; i < data.length - 4; i += 16) {
+            const r = data[i], g = data[i+1], b = data[i+2];
+            if (r > 60 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 10) skinPixels++;
             
-            // 1. 肌色判定
-            // 簡易アルゴリズム: R > G > B かつ RとGの差がある程度ある
-            if (r > 60 && g > 40 && b > 20 && r > g && r > b && Math.abs(r - g) > 10) {
-                skinPixels++;
-            }
-
-            // 2. 複雑度（エッジ）判定
-            // 隣のピクセルとの輝度差を見る
-            const r2 = data[i+4];
-            const g2 = data[i+5];
-            const b2 = data[i+6];
             const bri1 = (r+g+b)/3;
-            const bri2 = (r2+g2+b2)/3;
+            const bri2 = (data[i+4]+data[i+5]+data[i+6])/3;
             edgeScore += Math.abs(bri1 - bri2);
         }
 
-        const totalPixelsCheck = (len / 4) / 4;
-        
-        // 正規化
-        let skinRatio = (skinPixels / totalPixelsCheck) * 100; // 0~100%
-        // 肌色は背景全部肌色とかもあるので、50%以上は頭打ちにするなどの調整
-        if(skinRatio > 80) skinRatio = 80; 
+        const pixels = (data.length / 4) / 4;
+        let skin = (skinPixels / pixels) * 100;
+        if(skin > 80) skin = 80;
+        let cplx = (edgeScore / pixels) / 30 * 100;
+        if(cplx > 100) cplx = 100;
 
-        // 複雑度は画像によって青天井なので適当にキャップ
-        let complexity = (edgeScore / totalPixelsCheck) / 30 * 100; 
-        if(complexity > 100) complexity = 100;
-
-        // 総合スコア: 肌色6割、複雑度4割
-        const total = (skinRatio * 0.6) + (complexity * 0.4);
-        
         return {
-            skin: skinRatio,
-            cplx: complexity,
-            totalScore: Math.min(total * 1.5, 100) // ちょっとブースト
+            skin: skin,
+            cplx: cplx,
+            totalScore: Math.min((skin * 0.6) + (cplx * 0.4) * 1.5, 100)
         };
     }
 
-    // === UI更新 ===
-    function updateCockpit(res) {
-        currentScore = res.totalScore;
-        const p = Math.round(currentScore);
-        
+    function updateUI(res) {
+        const p = Math.round(res.totalScore);
         scoreDisplay.innerText = `Lv.${p}`;
         scoreSub.innerText = p > 70 ? "HIGH INTENSITY" : (p > 40 ? "NORMAL" : "LOW ACTIVITY");
         
-        // 色変化
-        const hue = 180 + (p * 1.8); // 青->赤
+        const hue = 180 + (p * 1.8);
         scoreDisplay.style.color = `hsl(${hue}, 100%, 60%)`;
-
-        // バー更新
         barSkin.style.width = Math.min(res.skin * 1.5, 100) + "%";
         barCplx.style.width = res.cplx + "%";
     }
 
-    // === ノーツ生成 ===
-    function spawnNote(score) {
-        const laneW = notesCanvas.parentElement.clientWidth;
-        const laneH = notesCanvas.parentElement.clientHeight;
-        
-        // スコアが高いほど、太くて赤いバー
-        const height = laneH * (0.3 + (score/100 * 0.7)); 
-        const hue = 180 + (score * 1.8);
-        
-        notes.push({
-            x: laneW + 50,
-            y: (laneH - height) / 2,
-            width: 30,
-            height: height,
-            color: `hsl(${hue}, 100%, 60%)`,
-            glow: score * 0.5
-        });
-    }
-
-    // === 描画ループ ===
+    // === メインループ ===
     function renderLoop() {
         requestAnimationFrame(renderLoop);
         
@@ -430,55 +377,97 @@
             notesCanvas.width = p.clientWidth;
             notesCanvas.height = p.clientHeight;
         }
-
         const W = notesCanvas.width;
         const H = notesCanvas.height;
         nCtx.clearRect(0, 0, W, H);
 
-        // 1. タイマーアニメーション
         const now = Date.now();
         const elapsed = now - slideStartTime;
-        let remainRatio = 1.0 - (elapsed / slideDuration);
-        if(remainRatio < 0) remainRatio = 0;
-        
-        timerBar.style.transform = `scaleX(${remainRatio})`;
-        
-        // 色を残り時間で変える（余裕あれば青、無ければ赤）
-        const timerHue = remainRatio * 120; // 0=赤, 1=緑
-        timerBar.style.background = `hsl(${timerHue}, 100%, 50%)`;
 
-        // 2. ノーツ描画 (横スクロール)
+        // 1. タイマー更新
+        if (isLocked) {
+            let progress = (elapsed / minDuration) * 100;
+            if (progress >= 100) {
+                progress = 100;
+                isLocked = false;
+                timerStatus.innerText = "READY (NEXT NOTE)";
+                timerStatus.style.color = "var(--neon-green)";
+                timerBar.style.background = "var(--neon-green)";
+            }
+            timerBar.style.width = progress + "%";
+        }
+
+        // 2. ノーツ生成
+        if (now > nextNoteTime) {
+            spawnNote();
+            nextNoteTime = now + currentInterval;
+        }
+
+        // 3. ノーツ描画・移動・トリガー判定
         const line = document.getElementById('hit-line');
+        
+        // 処理済みフラグ（1フレームで複数回切り替わらないように）
+        let triggered = false;
 
         for (let i = notes.length - 1; i >= 0; i--) {
             const n = notes[i];
             
-            // 移動速度もスコア依存にしたいが、画像切り替えと同期させるため一定にするか、
-            // 「次の画像が出るタイミング」でヒットさせたい。
-            // ここではシンプルに「一定速度で流れる雰囲気作り」とする。
-            n.x -= NOTE_SPEED;
+            // 移動 (速度可変)
+            n.x -= currentSpeed;
 
             nCtx.shadowBlur = 10 + n.glow;
             nCtx.shadowColor = n.color;
             nCtx.fillStyle = n.color;
             nCtx.globalAlpha = 0.9;
-            
             nCtx.beginPath();
             nCtx.roundRect(n.x, n.y, n.width, n.height, 4);
             nCtx.fill();
 
-            // 判定ライン通過エフェクト
-            if (n.x < HIT_X && n.x > HIT_X - NOTE_SPEED - 5) {
+            // ★トリガー判定★
+            // 判定ライン(HIT_X)を通過した瞬間
+            // かつ、ロックが解除されている(isLocked == false)
+            if (!triggered && !isLocked && n.x < HIT_X && !n.passed) {
+                n.passed = true; // 通過済みマーク
+                triggered = true;
+                
+                // ヒットエフェクト
+                line.style.background = "var(--neon-green)";
+                line.style.boxShadow = "0 0 20px var(--neon-green)";
+                setTimeout(()=> line.style.background="rgba(255,255,255,0.6)", 100);
+
+                // 画像切り替え実行！
+                playNext(); 
+                // playNext内で slideStartTime がリセットされるので isLocked も true に戻る
+            }
+            // ロック中、または通過済みでもエフェクトだけ出す
+            else if (n.x < HIT_X && n.x > HIT_X - currentSpeed - 5 && !n.passed) {
+                n.passed = true;
                 line.style.background = n.color;
                 line.style.boxShadow = `0 0 30px ${n.color}`;
-                setTimeout(() => {
-                    line.style.background = 'rgba(255,255,255,0.6)';
-                    line.style.boxShadow = '0 0 15px #fff';
-                }, 100);
+                setTimeout(()=> line.style.background="rgba(255,255,255,0.6)", 100);
             }
 
             if (n.x < -50) notes.splice(i, 1);
         }
+    }
+
+    function spawnNote() {
+        const laneW = notesCanvas.width;
+        const laneH = notesCanvas.height;
+        const score = currentScore;
+        
+        const height = laneH * (0.3 + (score/100 * 0.7)); 
+        const hue = 180 + (score * 1.8);
+        
+        notes.push({
+            x: laneW + 50,
+            y: (laneH - height) / 2,
+            width: 20 + (score/100 * 20),
+            height: height,
+            color: `hsl(${hue}, 100%, 60%)`,
+            glow: score * 0.5,
+            passed: false
+        });
     }
 </script>
 </body>
